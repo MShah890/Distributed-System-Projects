@@ -28,12 +28,26 @@ type ExampleReply struct {
 
 // GetTaskArgs argument struct
 type GetTaskArgs struct {
-	workerID int
 }
 
+// GetTaskReply reply struct
 type GetTaskReply struct {
-	taskAvailable bool
-	filePath      string
+	FilePath        string
+	MapTaskNum      int
+	ReduceTaskNum   int
+	ReduceTaskCount int
+	TaskType        string
+}
+
+// CompleteTaskArgs argument struct
+type CompleteTaskArgs struct {
+	FilePathList  []string
+	FileSplitName string
+	TaskType      string
+}
+
+// CompleteTaskReply reply struct
+type CompleteTaskReply struct {
 }
 
 // Cook up a unique-ish UNIX-domain socket name
