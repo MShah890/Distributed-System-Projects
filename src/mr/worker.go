@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/rpc"
 	"os"
+	"sort"
 	"strconv"
 )
 
@@ -20,7 +21,7 @@ type KeyValue struct {
 }
 
 //
-// use ihash(key) % NReduce to choose the reduce
+// ihash(key) % NReduce is used to choose the reduce
 // task number for each KeyValue emitted by Map.
 //
 func ihash(key string) int {
@@ -35,18 +36,66 @@ func ihash(key string) int {
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
-	args, reply := GetTaskArgs{}, GetTaskReply{}
-	count := 0
+	mapTaskCount, reduceTaskCount := 0, 0
 	for true {
+		args, reply := GetTaskArgs{}, GetTaskReply{}
 		call("Master.GetTask", &args, &reply)
 
 		if reply.TaskType == "Map" {
-			fmt.Println(count)
-			count++
+			mapTaskCount++
 			doMap(reply.FilePath, mapf, reply.MapTaskNum, reply.ReduceTaskCount)
+		} else if reply.TaskType == "Reduce" {
+			reduceTaskCount++
+			doReduce(reply.ReduceTaskNum, reducef, reply.FilePathList)
+		} else if reply.TaskType == "Clean Exit" {
+			os.Exit(0)
 		}
 	}
 
+}
+
+func doReduce(reduceTaskNum int, reducef func(string, []string) string, filePathList []string) {
+	// intermediate := []KeyValue{}
+	intermediate := make(map[string][]string)
+	type void struct{}
+	var member void
+	keySet := make(map[string]void) // New empty set
+
+	keys := []string{}
+	for _, v := range filePathList {
+		// fmt.Println(v)
+		file, err := os.Open(v)
+		defer file.Close()
+		if err != nil {
+			log.Fatalf("cannot open %v", v)
+		}
+		dec := json.NewDecoder(file)
+		for {
+			var kv KeyValue
+			if err := dec.Decode(&kv); err != nil {
+				break
+			}
+			intermediate[kv.Key] = append(intermediate[kv.Key], kv.Value)
+			_, exists := keySet[kv.Key]
+			if !exists {
+				keySet[kv.Key] = member
+				keys = append(keys, kv.Key)
+			}
+		}
+	}
+	sort.Strings(keys)
+	outName := "temp-mr-out-" + strconv.Itoa(reduceTaskNum)
+	outFile, _ := os.Create(outName)
+	for _, key := range keys {
+		output := reducef(key, intermediate[key])
+		fmt.Fprintf(outFile, "%v %v\n", key, output)
+	}
+
+	cargs, creply := CompleteTaskArgs{}, CompleteTaskReply{}
+	cargs.TaskType = "Reduce"
+	cargs.FilePathList = append(cargs.FilePathList, outName)
+	cargs.ReduceTaskNum = reduceTaskNum
+	call("Master.CompleteTask", &cargs, &creply)
 }
 
 func doMap(filePath string, mapf func(string, string) []KeyValue, mapTaskNum int, reduceTaskCount int) {
@@ -60,14 +109,14 @@ func doMap(filePath string, mapf func(string, string) []KeyValue, mapTaskNum int
 	}
 	file.Close()
 	kva := mapf(filePath, string(content))
-	fmt.Println("Returned from map")
+	// fmt.Println("Returned from map")
 	kvalListPerRed := doPartition(kva, reduceTaskCount)
-	fmt.Println("Returned From Partition")
+	// fmt.Println("Returned From Partition")
 	fileNames := make([]string, reduceTaskCount)
 	for i := 0; i < reduceTaskCount; i++ {
 		fileNames[i] = WriteToJSONFile(kvalListPerRed[i], mapTaskNum, i)
 	}
-	fmt.Println("Returned From WritingJSON")
+	// fmt.Println("Returned From WritingJSON")
 
 	cargs, creply := CompleteTaskArgs{}, CompleteTaskReply{}
 	cargs.TaskType = "Map"
@@ -87,7 +136,7 @@ func doPartition(kva []KeyValue, reduceTaskCount int) [][]KeyValue {
 
 // WriteToJSONFile writes key value pairs to a json file for a particular reduce task
 func WriteToJSONFile(intermediate []KeyValue, mapTaskNum, reduceTaskNUm int) string {
-	fmt.Println("Writing file for task " + strconv.Itoa(mapTaskNum))
+	// fmt.Println("Writing file for task " + strconv.Itoa(mapTaskNum))
 	filename := "temp-mr-" + strconv.Itoa(mapTaskNum) + "-" + strconv.Itoa(reduceTaskNUm)
 	jfile, _ := os.Create(filename)
 
@@ -99,29 +148,6 @@ func WriteToJSONFile(intermediate []KeyValue, mapTaskNum, reduceTaskNUm int) str
 		}
 	}
 	return filename
-}
-
-//
-// example function to show how to make an RPC call to the master.
-//
-// the RPC argument and reply types are defined in rpc.go.
-//
-func CallExample() {
-
-	// declare an argument structure.
-	args := ExampleArgs{}
-
-	// fill in the argument(s).
-	args.X = 99
-
-	// declare a reply structure.
-	reply := ExampleReply{}
-
-	// send the RPC request, wait for the reply.
-	call("Master.Example", &args, &reply)
-
-	// reply.Y should be 100.
-	fmt.Printf("reply.Y %v\n", reply.Y)
 }
 
 //
